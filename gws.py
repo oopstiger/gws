@@ -118,7 +118,7 @@ def gws_request_handler(req):
                             data=html)
 
 
-def gws_server(address=('localhost', 80)):
+def gws_server(address):
     s = socket.socket()
     s.bind(address)
     s.listen(5)
@@ -151,5 +151,6 @@ if __name__ == '__main__':
     print('loading html template...')
     with open('pages/gsl.htm') as t:
         RESULT_PAGE_HTML = t.read()
-    gws_server()
+
+    gws_server(('0.0.0.0', 80))
 
