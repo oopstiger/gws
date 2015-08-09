@@ -1,2 +1,2 @@
 # gws
-A Google Web Search mirror
+A simple Google Web Search mirror service.

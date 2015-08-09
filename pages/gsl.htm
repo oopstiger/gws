@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style type="text/css">
+	.rl{
+		list-style: none;
+		padding-left: 0;
+	}
+	.tl{
+		color: #00c040
+	}
+	.t{
+		font-family: arial,sans-serif;
+		font-size: 1em;
+		margin-bottom: 0.2em;
+	}
+	.c{
+		font-family: arial,sans-serif;
+		font-style: normal;
+		font-size: 0.8em;
+		color: #006620;
+	}
+	.st {
+		color: #545454;
+		font-family: arial,sans-serif;
+		font-size: 0.8em;
+	}
+	#center_col{
+		margin-left: 8em;
+		max-width: 45%;
+        min-width: 500px !important;
+	}
+	#bar{
+		background-color: #f1f1f1;
+		border-bottom: 1px solid #666;
+		border-color: #e5e5e5;
+		height: 4em;
+	}
+	#stat{
+		font-family: arial,sans-serif;
+		font-size: 0.8em;
+		color: #808080;
+		margin-top: 0.8em;
+		margin-bottom: 1em;
+	}
+	#ib{
+		max-width: 24em;
+		height: 1.5em;
+		font-size: 1em;
+		margin-left: 8em;
+		margin-top: 1.1em;
+	}
+	#sb{
+		background: #dd4b39;
+		border: 0;
+		padding-left: 1em;
+		padding-right: 1em;
+		height: 2em;
+		color: #313131;
+	}
+</style>
+	<title>$KEYWORDS$ - Search</title>
+</head>
+<body style="margin:0">
+<div>
+<div id="bar">
+<div>
+	<div id="input"><input type="text" id="ib"/>
+	<button id="sb">Search</button>
+	</div>
+</div>
+</div>
+<div id="center_col">
+<div id="stat">$STAT$</div>
+<ul class="rl">
+$RESULTS$
+</ul></div>
+</div>
+</body>
+</html>
