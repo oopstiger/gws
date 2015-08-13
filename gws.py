@@ -103,10 +103,6 @@ def gws_result_page(html, kw, results):
         .replace('$RESULTS$', ul).replace('$KEYWORDS$', html_escape(kw))
 
 
-def dl_request_handler(req):
-    return ;
-
-
 def gws_request_handler(req):
     queries = url_parse_queries(req.path)
     if not queries or not req.path.startswith('/api/search?') or 'q' not in queries:
