@@ -1,4 +1,4 @@
-import json
+from os import path
 
 from bs4 import BeautifulSoup
 from libhttp import *
@@ -45,6 +45,8 @@ def parse_result_page(html):
     """
     soup = BeautifulSoup(html, 'html.parser')
     ires = soup.find('div', id='ires')
+    if not ires:
+        return {'stat': '', 'results': []}
     ga = ires.find_all('li', class_='g')
     if not ga:
         ga = ires.find_all('div', class_='g')
@@ -52,18 +54,23 @@ def parse_result_page(html):
     for g in ga:
         results.append(parse_result_element(g))
 
-    tb = soup.find('div', id='topabar')
-    stat = tb.text.encode('utf-8') if tb else ''
+    tb = soup.find('div', id='resultStat')
+    if not tb:
+        tb = soup.find('div', id='topabar')
+    stat = tb.text.encode('utf-8', 'ignore') if tb else ''
     return {'stat': stat, 'results': results}
 
 
 def gws_ncr_cookie():
-    ncr = url_fetch('https://www.google.com/ncr')
-    if ncr.status == 200:
-        return ''   # domain for current region is google.com
-    if 301 <= ncr.status <= 302:
-        if ncr.headers.has('Location', 'https://www.google.com/') and 'Set-Cookie' in ncr:
-            return ncr.headers['Set-Cookie'].split(';', 1)[0]
+    try:
+        ncr = url_fetch('https://www.google.com/ncr')
+        if ncr.status == 200:
+            return ''   # domain for current region is google.com
+        if 301 <= ncr.status <= 302:
+            if ncr.headers.has('Location', 'https://www.google.com/') and 'Set-Cookie' in ncr:
+                return ncr.headers['Set-Cookie'].split(';', 1)[0]
+    except:
+        pass
     return 'PREF=ID=1111111111111111:FF=0:LD=en:CR=2:TM=1439109218:LM=1439109218:V=1:S=v4gn7jZInBn-giuT'
 
 
@@ -82,9 +89,9 @@ def gws_search(words, page=1):
 
 
 def gws_result_page(html, kw, results):
-    li = '<li><div><h3 class="t"><a href="%s" class="tl">%s</a></h3>' \
-         '<cite class="c">%s</cite><br/>' \
-         '<span class="st">%s</span></div></li>'
+    li = '<div class="g"><div class="rc" data-hveid="69"><h3 class="r"><a href="%s" target="_blank">%s</a></h3>'\
+         '<div class="s"><div><div class="f kv _SWb" style="white-space:nowrap"><cite class="_Rm">%s</cite>'\
+         '</div><span class="st">%s</span></div></div></div></div>'
     ul = []
     for r in results['results']:
         if r['url'].find('://') < 0:
@@ -94,6 +101,10 @@ def gws_result_page(html, kw, results):
     ul = ''.join(ul)
     return html.replace('$STAT$', results['stat'])\
         .replace('$RESULTS$', ul).replace('$KEYWORDS$', html_escape(kw))
+
+
+def dl_request_handler(req):
+    return ;
 
 
 def gws_request_handler(req):
@@ -131,12 +142,30 @@ def gws_server(address):
             writer = HTTPStreamWriter(c)
             req = reader.read_request()
             queries = url_parse_queries(req.path)
-            if not queries or not req.path.startswith('/api/search?') or 'q' not in queries:
-                writer.write_response(HTTPResponse(404, 'Not Found',
-                                                   headers={'Content-Length': 0, 'Connection': 'close'}))
-                continue
-            resp = gws_request_handler(req)
-            writer.write_response(resp)
+            if req.method != 'GET':
+                raise HTTPApplicationError('not supported method.')
+
+            elif req.path.startswith('/api/search?'):
+                if 'q' not in queries:
+                    raise HTTPApplicationError('missing argument.')
+                resp = gws_request_handler(req)
+                writer.write_response(resp)
+
+            else:
+                fpath = './www' + url_decode(req.plainpath)
+                if fpath.find('..') >= 0 or not path.isfile(fpath):
+                    raise HTTPApplicationError('forbidden path.')
+                with open(fpath, 'r') as f:
+                    fname = fpath[fpath.rfind('/')+1:]
+                    writer.write_response(HTTPResponse(headers={'Connection': 'close',
+                                                                'Content-Disposition': 'attachment;filename=%s' % fname,
+                                                                'Content-Type': 'application/octet-stream'}))
+                    while True:
+                        d = f.read(4096)
+                        if d:
+                            writer.write(d)
+                        else:
+                            break
         except HTTPEOFError:
             pass
         except Exception, e:

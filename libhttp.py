@@ -33,6 +33,16 @@ class HTTPBadStreamError(Exception):
         return self.message
 
 
+class HTTPApplicationError(Exception):
+    def __init__(self, *args, **kwargs):
+        Exception(self, args, kwargs)
+        if len(args) > 0:
+            self.message = str(args[0])
+
+    def __str__(self):
+        return self.message
+
+
 class HTTPHeaders(object):
     def __init__(self):
         self._items = []
@@ -152,6 +162,11 @@ class HTTPRequest(object):
 
     def __setitem__(self, key, value):
         return self.headers.__setitem__(key, value)
+
+    @property
+    def plainpath(self):
+        q = self.path.find('?')
+        return url_decode(self.path if q < 0 else self.path[:q])
 
     def format(self, data_part=True):
         parts = ['%s %s %s\r\n' % (self.method, self.path, self.version)]
