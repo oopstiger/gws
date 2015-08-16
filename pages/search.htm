@@ -1,0 +1,78 @@
+$def with(data)
+<!DOCTYPE html>
+<html>
+<head>
+<style type="text/css">
+	.rl{
+		list-style: none;
+		padding-left: 0;
+	}
+	.tl{
+		color: #00c040
+	}
+	.t{
+		font-family: arial,sans-serif;
+		font-size: 1em;
+		margin-bottom: 0.2em;
+	}
+	.c{
+		font-family: arial,sans-serif;
+		font-style: normal;
+		font-size: 0.8em;
+		color: #006620;
+	}
+	.st {
+		color: #545454;
+		font-family: arial,sans-serif;
+		font-size: 0.8em;
+	}
+	#center_col{
+		margin-left: 8em;
+		max-width: 45%;
+        min-width: 500px !important;
+	}
+	#bar{
+		background-color: #f1f1f1;
+		border-bottom: 1px solid #666;
+		border-color: #e5e5e5;
+		height: 4em;
+	}
+	#stat{
+		font-family: arial,sans-serif;
+		font-size: 0.8em;
+		color: #808080;
+		margin-top: 0.8em;
+		margin-bottom: 1em;
+	}
+	#ib{
+		max-width: 24em;
+		min-width: 400px;
+		height: 1.5em;
+		font-size: 1em;
+		margin-left: 8em;
+		margin-top: 1.1em;
+	}
+	#sb{
+	}
+</style>
+	<title>$(data['title'])</title>
+</head>
+<body style="margin:0">
+<div>
+<div id="bar">
+<div>
+	<div><input type="text" id="ib"/><button id="sb">Search</button>
+	</div>
+</div>
+
+</div>
+<div id="center_col">
+<div id="stat">$(data['stat'])</div>
+<ul class="rl">
+$for r in data['results']:
+    <li>$(r)</li>
+
+</ul></div>
+</div>
+</body>
+</html>
