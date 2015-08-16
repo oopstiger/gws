@@ -51,16 +51,14 @@ def url_parse_queries(url):
     return queries
 
 
-def url_fetch_secure(url, keyfile, certfile, ca_certs, method='GET', headers=None, data=None, max_redirection=0):
+def url_fetch_secure(url, keyfile, certfile, ca_certs, method='GET', headers=None, data=None,
+                     max_redirection=0, limit=10485760):
     u = urlparse.urlparse(url)
     port = u.port
     if u.scheme != 'http' and u.scheme != 'https':
         raise AssertionError('unsupported url scheme.')
     if not port:
         port = 443 if u.scheme == 'https' else 80
-    conn = socket.create_connection((u.hostname, port))
-    if u.scheme == 'https':
-        conn = ssl.wrap_socket(conn, keyfile=keyfile, certfile=certfile, ca_certs=ca_certs)
 
     req = HTTPRequest(method=method, path=url[len(u.scheme)+3+len(u.netloc):])
     if method == 'POST' and data:
@@ -75,10 +73,14 @@ def url_fetch_secure(url, keyfile, certfile, ca_certs, method='GET', headers=Non
     req['Connection'] = 'close'
     if 'User-Agent' not in req:
         req['User-Agent'] = 'AppleWebKit/537.36'
+
+    conn = socket.create_connection((u.hostname, port))
+    if u.scheme == 'https':
+        conn = ssl.wrap_socket(conn, keyfile=keyfile, certfile=certfile, ca_certs=ca_certs)
     writer = HTTPStreamWriter(conn)
     writer.write_request(req)
     reader = HTTPStreamReader(conn)
-    resp = reader.read_response(data_part=True)
+    resp = reader.read_response(data_part=True, limit=limit)
     conn.shutdown(socket.SHUT_RDWR)
     conn.close()
 
@@ -86,12 +88,12 @@ def url_fetch_secure(url, keyfile, certfile, ca_certs, method='GET', headers=Non
         if 'Location' not in resp:
             raise HTTPBadStreamError('bad redirection.')
         jmpurl = resp.headers['Location']
-        return url_fetch_secure(jmpurl, keyfile, certfile, ca_certs, method, headers, data, max_redirection-1)
+        return url_fetch_secure(jmpurl, keyfile, certfile, ca_certs, method, headers, data, max_redirection-1, limit)
     return resp
 
 
-def url_fetch(url, method='GET', headers=None, data=None, max_redirection=0):
-    return url_fetch_secure(url, None, None, None, method, headers, data, max_redirection)
+def url_fetch(url, method='GET', headers=None, data=None, max_redirection=0, limit=10485760):
+    return url_fetch_secure(url, None, None, None, method, headers, data, max_redirection, limit)
 
 
 def html_escape(s):
@@ -113,6 +115,11 @@ class HTTPNetworkError(Exception):
 class HTTPBadStreamError(Exception):
     def __init__(self, *args, **kwargs):
         super(HTTPBadStreamError, self).__init__(args, kwargs)
+
+
+class HTTPSizeTooLargeError(Exception):
+    def __init__(self, *args, **kwargs):
+        super(HTTPSizeTooLargeError, self).__init__(args, kwargs)
 
 
 class HTTPApplicationError(Exception):
@@ -327,7 +334,7 @@ class HTTPStreamReader(object):
 
     def _recv(self):
         try:
-            d = self._sock.recv(1024)
+            d = self._sock.recv(16384)
         except:
             raise HTTPNetworkError()
         if not d:
@@ -357,34 +364,47 @@ class HTTPStreamReader(object):
         self._buf = self._buf[q:]
         return d
 
-    def read_line(self):
-        """ Read till a CRLF is encountered. The CRLF is not included in the returned string.
-        :return: A string not including the CRLF.
+    def read_line(self, le='\r\n', limit=16384):
+        """ Read till a line ending sequence is encountered.
+         The line ending sequence is not included in the returned string.
+         This method raises an HTTPSizeTooLargeError when the length of the line exceeds the limit.
+        :param le: Line ending sequence, defaults to '\r\n'
+        :param limit: Maximum number of octets allowed.
+        :return: A string not including the line ending sequence.
         """
         while True:
-            i = self._buf.find('\r\n')
+            i = self._buf.find(le)
             if i >= 0:
                 line = self._buf[:i]
                 self._buf = self._buf[i+2:]
                 return line
+            else:
+                if len(self._buf) >= limit:
+                    raise HTTPSizeTooLargeError('line too long.')
             self._buf += self._recv()
 
-    def read_chunk(self):
+    def read_chunk(self, limit=10485760):
         """ Read a chunk from the HTTP stream.
-          chunk      = chunk-size [ chunk-ext ] CRLF
-                       chunk-data CRLF
-          chunk-size = 1*HEXDIG
-          last-chunk = 1*("0") [ chunk-ext ] CRLF
-          chunk-data = 1*OCTET ; a sequence of chunk-size octets
-
-         See RFC7230 for more information about 'chunked' encoding.
-        :return:
+         This method raises an HTTPSizeTooLargeError when the length of the line exceeds the limit.
+         :param limit: Maximum number of octets allowed.
+         :return: A string that containing the chunk data.
         """
-        chunk_size = int(self.read_line(), 16)
+        # See RFC7230 for more information about 'chunked' encoding.
+        #  chunk      = chunk-size [ chunk-ext ] CRLF
+        #               chunk-data CRLF
+        #  chunk-size = 1*HEXDIG
+        #  last-chunk = 1*("0") [ chunk-ext ] CRLF
+        #  chunk-data = 1*OCTET ; a sequence of chunk-size octets
+        try:
+            chunk_size = int(self.read_line(limit=10), 16)
+        except ValueError:
+            raise HTTPBadStreamError('invalid chunk head.')
         if chunk_size == 0:
             return ''
         elif chunk_size < 0:
-            raise HTTPBadStreamError('invalid chunk size.')
+            raise HTTPBadStreamError('negative chunk size.')
+        elif chunk_size > limit:
+            raise HTTPSizeTooLargeError('chunk too large.')
         chunk = self.read(chunk_size)
         if '\r\n' != self.read(2):
             raise HTTPBadStreamError('invalid chunk ending.')
@@ -422,17 +442,19 @@ class HTTPStreamReader(object):
         except:
             raise HTTPBadStreamError('bad header line.')
 
-    def read_request(self, data_part=True):
+    def read_request(self, data_part=True, limit=65536):
         """ Extracts an HTTP request message from the stream.
         :param data_part: If data_part is set True, the entire message body will be load into the data field of
                           the returned HTTPRequest object. Otherwise, the message body is not extracted.
+        :param limit: Maximum number of octets allowed.
         :return: An HTTPRequest object.
         """
         req = HTTPRequest()
-        line = self.read_line()
+        line = self.read_line(limit=limit)
         req.method, req.path, req.version = self._parse_request_line(line)
         while True:
-            line = self.read_line()
+            limit -= len(line) + 2
+            line = self.read_line(limit=limit)
             if not line:
                 break
             k, v = self._parse_header_line(line)
@@ -441,16 +463,21 @@ class HTTPStreamReader(object):
         if data_part and req.method == 'POST':
             if 'Content-Length' in req:
                 # explicit sized
-                req.data = self.read(int(req['Content-Length']))
+                length = int(req['Content-Length'])
+                if length > limit:
+                    raise HTTPSizeTooLargeError('entity size too large.')
+                req.data = self.read(length)
+                limit -= length
             elif req.headers.has('Transfer-Encoding', 'chunked') >= 0:
                 # implied by 'chunked' encoding
                 data = []
-                chunk = self.read_chunk()
+                chunk = self.read_chunk(limit=limit)
                 while chunk:
+                    limit -= len(chunk) + 2
                     data.append(chunk)
                 req.data = ''.join(data)
                 # trailers
-                line = self.read_line()
+                line = self.read_line(limit=limit)
                 while line:
                     k, v = self._parse_header_line(line)
                     req.headers.append(k, v)
@@ -458,17 +485,19 @@ class HTTPStreamReader(object):
                 raise HTTPBadStreamError('indeterminate request body size.')
         return req
 
-    def read_response(self, data_part=True):
+    def read_response(self, data_part=True, limit=65536):
         """ Extracts an HTTP response message from the stream.
         :param data_part: If data_part is set True, the entire message body will be load into the data field of
                           the returned HTTPResponse object. Otherwise, the message body is not extracted.
+        :param limit: Maximum number of octets allowed.
         :return: An HTTPResponse object.
         """
         resp = HTTPResponse()
-        line = self.read_line()
+        line = self.read_line(limit=limit)
         resp.version, resp.status, resp.phrases = self._parse_status_line(line)
         while True:
-            line = self.read_line()
+            limit -= len(line) + 2
+            line = self.read_line(limit=limit)
             if not line:
                 break
             k, v = self._parse_header_line(line)
@@ -477,16 +506,22 @@ class HTTPStreamReader(object):
         if data_part:
             if 'Content-Length' in resp:
                 # explicit sized
-                resp.data = self.read(int(resp['Content-Length']))
+                length = int(resp['Content-Length'])
+                if length > limit:
+                    raise HTTPSizeTooLargeError('entity size too large.')
+                resp.data = self.read(length)
+                limit -= length
             elif resp.headers.has('Transfer-Encoding', 'chunked') >= 0:
                 # implied by 'chunked' encoding
                 data = []
-                chunk = self.read_chunk()
+                chunk = self.read_chunk(limit=limit)
                 while chunk:
+                    limit -= len(chunk) + 2
                     data.append(chunk)
                 resp.data = ''.join(data)
                 # trailers
-                line = self.read_line()
+                line = self.read_line(limit=limit)
+                limit -= len(line) + 2
                 while line:
                     k, v = self._parse_header_line(line)
                     resp.headers.append(k, v)
@@ -495,7 +530,8 @@ class HTTPStreamReader(object):
                 data = []
                 try:
                     while True:
-                        data.append(self.read_some(4096))
+                        data.append(self.read_some(limit))
+                        limit -= len(data[-1])
                 except HTTPEOFError:
                     pass
                 resp.data = ''.join(data)
@@ -665,8 +701,9 @@ def WebServerConfiguration():
         WebServer.CONF_THREAD_POOL_SIZE: 4,
         WebServer.CONF_SERVER_NAME: 'lync',
         WebServer.CONF_DEFAULT_CONTENT_TYPE: 'text/html; charset=utf-8',
-        WebServer.CONF_CONNECTION_TIMEOUT: 3,
+        WebServer.CONF_CONNECTION_TIMEOUT: 3000,
         WebServer.CONF_MAX_KEEP_ALIVE: 0,
+        WebServer.CONF_MAX_MESSAGE_SIZE: 65536
         }
     return conf
 
@@ -680,6 +717,7 @@ class WebServer(object):
     CONF_DEFAULT_CONTENT_TYPE = 'server.default-content-type'
     CONF_CONNECTION_TIMEOUT = 'server.connection-timeout'
     CONF_MAX_KEEP_ALIVE = 'server.max-keep-alive'
+    CONF_MAX_MESSAGE_SIZE = 'server.max-message-size'
 
     def __init__(self, logging, conf=None):
         self.logging = logging
@@ -747,13 +785,15 @@ class WebServer(object):
         while True:
             self._acceptor_guard.wait()
             client, addr = self._acceptor.accept()
+            client.settimeout(self.conf[WebServer.CONF_CONNECTION_TIMEOUT])
             self._acceptor_guard.set()
-            self.logging.info('new connection from: ' + str(addr))
+
+            max_msg_size = self.conf[WebServer.CONF_MAX_MESSAGE_SIZE]
             max_keep_alive = self.conf[WebServer.CONF_MAX_KEEP_ALIVE]
             context = WebSessionContext(client)
             while True:
                 try:
-                    context.update(context.input.read_request())
+                    context.update(context.input.read_request(limit=max_msg_size))
                     context.keep_alive = max_keep_alive == 0 or max_keep_alive > context.request_count
                     req, res = context.request, context.response
                     app, handler = self._map(context)
@@ -764,14 +804,14 @@ class WebServer(object):
                         try:
                             queries = url_parse_queries(req.path)
                             handler.func(app, context, **queries)
-                        except TypeError, e:   # argument mismatch
-                            context.error = e
-                            context.response = HTTPResponse(400, 'Bad Request')
+                        except HTTPApplicationError, e:
+                            context.response = HTTPResponse(e.code, e.message)
                     if not context.do_not_reply:
                         self._reply(context)
-                        self.logging.info('[%d] %s %s' % (context.response.status, req.method, req.path))
-                except HTTPApplicationError, e:
-                    context.response = HTTPResponse(e.code, e.message)
+                        self.logging.info('%d %s' % (context.response.status, req.startline))
+                except HTTPSizeTooLargeError:
+                    context.output.write_response(HTTPResponse(400, 'Bad Request'))
+                    context.keep_alive = False
                 except Exception, e:
                     context.keep_alive = False
                     context.error = e
