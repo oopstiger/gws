@@ -122,31 +122,6 @@ class HTTPSizeTooLargeError(Exception):
         super(HTTPSizeTooLargeError, self).__init__(args, kwargs)
 
 
-class HTTPApplicationError(Exception):
-    def __init__(self, code, message, *args, **kwargs):
-        super(HTTPApplicationError, self).__init__(args, kwargs)
-        self.message = message
-        self.code = code
-
-    def __str__(self):
-        return str(self.code) + ' ' + self.message
-
-
-class HTTPBadRequest(HTTPApplicationError):
-    def __init__(self):
-        super(HTTPBadRequest, self).__init__(400, 'Bad Request')
-
-
-class HTTPNotFound(HTTPApplicationError):
-    def __init__(self):
-        super(HTTPNotFound, self).__init__(404, 'Not Found')
-
-
-class HTTPServerError(HTTPApplicationError):
-    def __init__(self):
-        super(HTTPServerError, self).__init__(500, 'Server Error')
-
-
 class HTTPHeaders(object):
     def __init__(self):
         self._items = []
@@ -246,6 +221,24 @@ class HTTPHeaders(object):
             kv = p.strip(spaces).split(eq, 1)
             values[kv[0]] = kv[1] if len(kv) > 1 else ''
         return values
+
+    @property
+    def content_length(self):
+        length = self.get('Content-Length')
+        return int(length) if length else None
+
+    @property
+    def content_type(self):
+        """ Get Content-Type void of parameters. """
+        ct = self.get('Content-Type')
+        if ct:
+            return ct.split(';', 1)[0].strip()
+        return ''
+
+    @property
+    def charset(self):
+        params = self.split('Content-Type')
+        return params.get('charset', '')
 
 
 class HTTPRequest(object):
@@ -571,6 +564,38 @@ class HTTPStreamWriter(object):
             self.write(resp.data)
 
 
+class HTTPMovedPermanently(HTTPResponse):
+    def __init__(self, location):
+        super(HTTPMovedPermanently, self).__init__(301, 'Moved Permanently')
+        self.headers.append('Location', location)
+
+
+class HTTPMovedTemporarily(HTTPResponse):
+    def __init__(self, location):
+        super(HTTPMovedTemporarily, self).__init__(302, 'Found')
+        self.headers.append('Location', location)
+
+
+class HTTPBadRequest(HTTPResponse):
+    def __init__(self):
+        super(HTTPBadRequest, self).__init__(400, 'Bad Request')
+
+
+class HTTPNotFound(HTTPResponse):
+    def __init__(self):
+        super(HTTPNotFound, self).__init__(404, 'Not Found')
+
+
+class HTTPServerError(HTTPResponse):
+    def __init__(self):
+        super(HTTPServerError, self).__init__(500, 'Server Error')
+
+
+class HTTPBadGateway(HTTPResponse):
+    def __init__(self):
+        super(HTTPBadGateway, self).__init__(502, 'Bad Gateway')
+
+
 class WebSessionContext(object):
     def __init__(self, sock):
         self.input = HTTPStreamReader(sock)
@@ -698,6 +723,7 @@ def WebServerConfiguration():
     :return: a dict object.
     """
     conf = {
+        WebServer.CONF_SERVER_LISTEN: 'localhost:8080',
         WebServer.CONF_THREAD_POOL_SIZE: 4,
         WebServer.CONF_SERVER_NAME: 'lync',
         WebServer.CONF_DEFAULT_CONTENT_TYPE: 'text/html; charset=utf-8',
@@ -712,6 +738,7 @@ class WebServer(object):
     """ Container for web applications. """
 
     # configuration keys
+    CONF_SERVER_LISTEN = 'server.listen'
     CONF_THREAD_POOL_SIZE = 'server.thread-pool-size'
     CONF_SERVER_NAME = 'server.name'
     CONF_DEFAULT_CONTENT_TYPE = 'server.default-content-type'
@@ -749,7 +776,9 @@ class WebServer(object):
                 return True
         return False
 
-    def run(self, address=('localhost', 80)):
+    def run(self):
+        ap = self.conf[WebServer.CONF_SERVER_LISTEN].strip().split(':', 1)
+        address = (ap[0], int(ap[1]) if len(ap) == 2 else 80)
         self.logging.info('launching web server %s:%d ...' % address)
         try:
             acceptor = socket.socket()
@@ -799,22 +828,27 @@ class WebServer(object):
                     app, handler = self._map(context)
                     if not handler:
                         self.logging.info('handler not found for: ' + req.startline)
-                        context.response = HTTPResponse(404, 'Not Found')
+                        context.response = HTTPNotFound()
                     else:
                         try:
                             queries = url_parse_queries(req.path)
                             handler.func(app, context, **queries)
-                        except HTTPApplicationError, e:
-                            context.response = HTTPResponse(e.code, e.message)
+                        except HTTPResponse, e:
+                            context.response = e
+                        except Exception, e:
+                            context.keep_alive = False
+                            context.response = HTTPServerError()
+                            # TODO: add detail message to this page
                     if not context.do_not_reply:
                         self._reply(context)
                         self.logging.info('%d %s' % (context.response.status, req.startline))
                 except HTTPSizeTooLargeError:
-                    context.output.write_response(HTTPResponse(400, 'Bad Request'))
+                    context.output.write_response(HTTPBadRequest())
+                    context.error = e
                     context.keep_alive = False
                 except Exception, e:
-                    context.keep_alive = False
                     context.error = e
+                    context.keep_alive = False
 
                 if not context.keep_alive:
                     try:

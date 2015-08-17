@@ -1,0 +1,9 @@
+{
+    "server.listen": "localhost:8080",
+    "server.thread-pool-size": 4,
+    "server.max-keep-alive": 0,
+    "server.default-content-type": "text/html; charset=utf-8",
+    "server.max-message-size": 65536,
+    "server.connection-timeout": 3000,
+    "server.name": "lync"
+}

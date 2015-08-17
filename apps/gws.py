@@ -12,6 +12,19 @@ class GoogleSearch(object):
         self.ncr_cookie = self.gws_ncr_cookie()
 
     @staticmethod
+    def gws_ncr_cookie():
+        try:
+            ncr = url_fetch('https://www.google.com/ncr')
+            if ncr.status == 200:
+                return ''   # domain for current region is google.com
+            if 301 <= ncr.status <= 302:
+                if ncr.headers.has('Location', 'https://www.google.com/') and 'Set-Cookie' in ncr:
+                    return ncr.headers['Set-Cookie'].split(';', 1)[0]
+        except:
+            pass
+        return 'PREF=ID=1111111111111111:FF=0:LD=en:CR=2:TM=1439109218:LM=1439109218:V=1:S=v4gn7jZInBn-giuT'
+
+    @staticmethod
     def shortcut(url):
         """ Extract the target URL from a google jump. """
         jumpurl = url.encode('utf-8') if isinstance(url, unicode) else url
@@ -41,43 +54,35 @@ class GoogleSearch(object):
             r['st'] = st_span.text.encode('utf-8')
         return r
 
-    @staticmethod
-    def gws_ncr_cookie():
+    def search(self, words, page=1):
         try:
-            ncr = url_fetch('https://www.google.com/ncr')
-            if ncr.status == 200:
-                return ''   # domain for current region is google.com
-            if 301 <= ncr.status <= 302:
-                if ncr.headers.has('Location', 'https://www.google.com/') and 'Set-Cookie' in ncr:
-                    return ncr.headers['Set-Cookie'].split(';', 1)[0]
-        except:
-            pass
-        return 'PREF=ID=1111111111111111:FF=0:LD=en:CR=2:TM=1439109218:LM=1439109218:V=1:S=v4gn7jZInBn-giuT'
-
-    @WebApplicationHandler('/json')
-    def search(self, context, w, p=1, **kwargs):
-        try:
-            p = int(p)
+            page = int(page)
         except ValueError:
-            p = 1
-        gurl = 'https://www.google.com/search?q=%s&start=%d' % (url_encode(w), (p-1)*10)
+            page = 1
+        gurl = 'https://www.google.com/search?q=%s&start=%d' % (url_encode(words), (page-1)*10)
         headers = HTTPHeaders()
         headers['Cookie'] = self.ncr_cookie
         headers['Refer'] = 'https://www.google.com/'
         try:
             resp = url_fetch(gurl, headers=headers)
             if resp.status != 200:
-                raise HTTPServerError()
+                return None
 
             ct = resp.headers.split('Content-Type')
             encoding = ct.get('charset', 'utf-8')
             data = self.parse_result_page(resp.data.decode(encoding, 'ignore').encode('utf-8'))
-            data['p'] = p
-            context.response['Content-Type'] = "application/json; charset=utf-8"
-            context.response.data = json.dumps(data)
+            data['p'] = page
+            return data
         except:
-            context.response = HTTPResponse(500, 'Server Unavailable')
+            return None
 
+    @WebApplicationHandler('/json')
+    def search_json(self, context, w, p=1, **kwargs):
+        data = self.search(w, p)
+        if not data:
+            raise HTTPBadGateway()
+        context.response['Content-Type'] = "application/json; charset=utf-8"
+        context.response.data = json.dumps(data)
 
     def parse_result_page(self, html):
         """ Parses an google search result page.
@@ -94,10 +99,12 @@ class GoogleSearch(object):
         for g in ga:
             results.append(self.parse_result_element(g))
 
-        tb = soup.find('div', id='resultStat')
-        if not tb:
-            tb = soup.find('div', id='topabar')
-        stat = tb.text.encode('utf-8', 'ignore') if tb else ''
+        stat = ''
+        for id in ['resultStat', 'resultStats', 'topabar']:
+            rs = soup.find('div', id=id)
+            if rs:
+                stat = rs.text.encode('utf-8', 'ignore')
+                break
         return {'stat': stat, 'results': results}
 
     def result_page(self, kw, p=1):

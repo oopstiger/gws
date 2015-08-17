@@ -1,6 +1,7 @@
 from lync import *
 from apps.gws import GoogleSearch
 from apps.fs import StaticFile
+import json
 
 
 def log(tag, msg):
@@ -10,15 +11,21 @@ def log(tag, msg):
 class console(object):
     debug = functools.partial(log, 'DEBUG')
     info = functools.partial(log, 'INFO')
+    warn = functools.partial(log, 'WARN')
     error = functools.partial(log, 'ERROR')
 
 
 if __name__ == '__main__':
-    conf = WebServerConfiguration()
-    server = WebServer(logging=console, conf=conf)
+    try:
+        with open('server.json') as f:
+            conf = json.load(f, 'utf-8')
+    except:
+        conf = WebServerConfiguration()
+        console.warn('file server.json is not found, using default configurations.')
 
+    server = WebServer(logging=console, conf=conf)
     gws = GoogleSearch()
     fs = StaticFile('www/', {})
     server.install(gws, '/search')
     server.install(fs)
-    server.run(('localhost', 8080))
+    server.run()
