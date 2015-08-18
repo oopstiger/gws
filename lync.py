@@ -851,8 +851,11 @@ class WebServer(object):
                         except Exception as e:
                             context.keep_alive = False
                             context.response = HTTPServerError()
+                            stacktrace = traceback.format_exc().encode('utf-8', 'ignore')
+                            self.logging.error(str(e))
+                            self.logging.error(traceback.format_exc().encode('utf-8', 'ignore'))
                             if not self.conf[WebServer.CONF_HIDE_EXCEPT_INFO]:
-                                context.response.data = traceback.format_exc().encode('utf-8', 'ignore')
+                                context.response.data = stacktrace
                                 context.response['Content-Type'] = 'text/plain; charset=utf-8'
                     if not context.do_not_reply:
                         self._reply(context)
