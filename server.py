@@ -24,7 +24,7 @@ if __name__ == '__main__':
         console.warn('file server.json is not found, using default configurations.')
 
     server = WebServer(logging=console, conf=conf)
-    gws = GoogleSearch()
+    gws = GoogleSearch('www.google.com.hk')
     fs = StaticFile('www/', {})
     server.install(gws, '/search')
     server.install(fs)

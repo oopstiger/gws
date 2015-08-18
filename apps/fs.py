@@ -24,7 +24,7 @@ class StaticFile(object):
         for k, v in mime_map:
             self.mime_map[k] = v
 
-    @WebApplicationHandler
+    @WebApplicationHandler(strict=False)
     def get(self, context, **kwargs):
         fspath = self.fsroot[:-1] + context.request.plainpath
         res = context.response

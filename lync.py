@@ -1,3 +1,5 @@
+import sys
+import traceback
 import socket
 import ssl
 import time
@@ -81,7 +83,6 @@ def url_fetch_secure(url, keyfile, certfile, ca_certs, method='GET', headers=Non
     writer.write_request(req)
     reader = HTTPStreamReader(conn)
     resp = reader.read_response(data_part=True, limit=limit)
-    conn.shutdown(socket.SHUT_RDWR)
     conn.close()
 
     if max_redirection > 0 and 301 <= resp.status <= 302:
@@ -564,34 +565,40 @@ class HTTPStreamWriter(object):
             self.write(resp.data)
 
 
-class HTTPMovedPermanently(HTTPResponse):
+class HTTPGenericError(Exception, HTTPResponse):
+    def __init__(self, status=200, phrases='OK'):
+        Exception.__init__(self)
+        HTTPResponse.__init__(self, status, phrases)
+
+
+class HTTPMovedPermanently(HTTPGenericError):
     def __init__(self, location):
         super(HTTPMovedPermanently, self).__init__(301, 'Moved Permanently')
         self.headers.append('Location', location)
 
 
-class HTTPMovedTemporarily(HTTPResponse):
+class HTTPMovedTemporarily(HTTPGenericError):
     def __init__(self, location):
         super(HTTPMovedTemporarily, self).__init__(302, 'Found')
         self.headers.append('Location', location)
 
 
-class HTTPBadRequest(HTTPResponse):
+class HTTPBadRequest(HTTPGenericError):
     def __init__(self):
         super(HTTPBadRequest, self).__init__(400, 'Bad Request')
 
 
-class HTTPNotFound(HTTPResponse):
+class HTTPNotFound(HTTPGenericError):
     def __init__(self):
         super(HTTPNotFound, self).__init__(404, 'Not Found')
 
 
-class HTTPServerError(HTTPResponse):
+class HTTPServerError(HTTPGenericError):
     def __init__(self):
         super(HTTPServerError, self).__init__(500, 'Server Error')
 
 
-class HTTPBadGateway(HTTPResponse):
+class HTTPBadGateway(HTTPGenericError):
     def __init__(self):
         super(HTTPBadGateway, self).__init__(502, 'Bad Gateway')
 
@@ -649,7 +656,7 @@ class WebSessionContext(object):
 
 class WebApplication(object):
     """ Decorates a class to make it a web application. """
-    def __init__(self, root='/', host=''):
+    def __init__(self, root='/', host='*'):
         if not root.endswith('/'):
             root += '/'
         self.root = root
@@ -690,21 +697,25 @@ class WebApplication(object):
                 handler_path = handler_path[:q]
 
         for handler in self.entries.values():
-            if req.method == handler.method and handler.pathre.match(handler_path):
-                return handler
+            if req.method == handler.method:
+                # Use naive string compare in strict mode, in this case handler.pathre is None
+                if (handler.pathre is None and handler.path == handler_path) or\
+                        (handler.pathre and handler.pathre.match(handler_path)):
+                    return handler
         return None
 
 
 class WebApplicationHandler(object):
     """ Decorates a method to make it a request handler.  """
-    def __init__(self, func=None, path='/.*', method='GET'):
+    def __init__(self, func=None, pattern='/', strict=True, method='GET'):
         """
         :param func: Name of the handler method.
-        :param path: Path that the handler bounds to.
+        :param pattern: Pattern of paths that the handler bounds to.
+        :param strict: Use strict matching mode or not.
         :param method: HTTP method that the handler accepts.
         """
-        self.path = path
-        self.pathre = re.compile(path)
+        self.path = pattern
+        self.pathre = re.compile(pattern) if not strict else None
         self.name = ''
         self.func = func
         self.method = method
@@ -715,7 +726,7 @@ class WebApplicationHandler(object):
 
     def __call__(self, func):
         """ This method is called when a descriptor is required. """
-        return WebApplicationHandler(func, self.path, self.method)
+        return WebApplicationHandler(func, self.path, self.pathre is None, self.method)
 
 
 def WebServerConfiguration():
@@ -729,7 +740,8 @@ def WebServerConfiguration():
         WebServer.CONF_DEFAULT_CONTENT_TYPE: 'text/html; charset=utf-8',
         WebServer.CONF_CONNECTION_TIMEOUT: 3000,
         WebServer.CONF_MAX_KEEP_ALIVE: 0,
-        WebServer.CONF_MAX_MESSAGE_SIZE: 65536
+        WebServer.CONF_MAX_MESSAGE_SIZE: 65536,
+        WebServer.CONF_HIDE_EXCEPT_INFO: True
         }
     return conf
 
@@ -745,6 +757,7 @@ class WebServer(object):
     CONF_CONNECTION_TIMEOUT = 'server.connection-timeout'
     CONF_MAX_KEEP_ALIVE = 'server.max-keep-alive'
     CONF_MAX_MESSAGE_SIZE = 'server.max-message-size'
+    CONF_HIDE_EXCEPT_INFO = 'server.hide-except-info'
 
     def __init__(self, logging, conf=None):
         self.logging = logging
@@ -806,7 +819,7 @@ class WebServer(object):
         req = context.request
         host = req.headers.get('Host')
         for path, app in self._apps:
-            if (not app.webapp.host or host == app.webapp.host) and req.path.startswith(path):
+            if (app.webapp.host == '*' or app.webapp.host == host) and req.path.startswith(path):
                 return app, app.webapp.map(context)
         return None, None
 
@@ -833,20 +846,22 @@ class WebServer(object):
                         try:
                             queries = url_parse_queries(req.path)
                             handler.func(app, context, **queries)
-                        except HTTPResponse, e:
+                        except HTTPGenericError as e:
                             context.response = e
-                        except Exception, e:
+                        except Exception as e:
                             context.keep_alive = False
                             context.response = HTTPServerError()
-                            # TODO: add detail message to this page
+                            if not self.conf[WebServer.CONF_HIDE_EXCEPT_INFO]:
+                                context.response.data = traceback.format_exc().encode('utf-8', 'ignore')
+                                context.response['Content-Type'] = 'text/plain; charset=utf-8'
                     if not context.do_not_reply:
                         self._reply(context)
                         self.logging.info('%d %s' % (context.response.status, req.startline))
-                except HTTPSizeTooLargeError:
+                except HTTPSizeTooLargeError as e:
                     context.output.write_response(HTTPBadRequest())
                     context.error = e
                     context.keep_alive = False
-                except Exception, e:
+                except Exception as e:
                     context.error = e
                     context.keep_alive = False
 
@@ -875,10 +890,12 @@ class WebServer(object):
         if res.status == 200 and req.method in ['GET', 'HEAD', 'POST']:
             res['Date'] = time.asctime() + ' ' + time.tzname[0]
         if res.data:
-            if 'Content-Length' not in res:
-                res['Content-Length'] = len(res.data)
+            res['Content-Length'] = len(res.data)
             if 'Content-Type' not in res:
                 res['Content-Type'] = self.conf[WebServer.CONF_DEFAULT_CONTENT_TYPE]
+        else:
+            if req.method in ['GET', 'POST'] and 'Content-Length' not in res:
+                res['Content-Length'] = 0
         if not context.keep_alive:
             res['Connection'] = 'close'
         context.output.write_response(res)

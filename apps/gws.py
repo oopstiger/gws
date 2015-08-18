@@ -1,20 +1,23 @@
 import sys
 import json
+import jinja2
 sys.path.append('../')
 
 from lync import *
 from bs4 import BeautifulSoup
 
 
-@WebApplication()
+@WebApplication(root='/')
 class GoogleSearch(object):
-    def __init__(self):
+    def __init__(self, domain='www.google.com'):
+        self.domain = domain
         self.ncr_cookie = self.gws_ncr_cookie()
+        with open('pages/search.htm') as f:
+            self.rtempl = jinja2.Template(f.read().decode('utf-8'))
 
-    @staticmethod
-    def gws_ncr_cookie():
+    def gws_ncr_cookie(self):
         try:
-            ncr = url_fetch('https://www.google.com/ncr')
+            ncr = url_fetch('https://%s/ncr' % self.domain)
             if ncr.status == 200:
                 return ''   # domain for current region is google.com
             if 301 <= ncr.status <= 302:
@@ -41,46 +44,46 @@ class GoogleSearch(object):
         :param node: The BeautifulSoup node object that holds the element.
         :return: A dict object contains extracted information.
         """
-        r = {'title': None, 'url': None, 'site': None, 'st': None}
+        elem = {'title': '', 'url': '', 'site': '', 'st': ''}
         a = node.find('a')
         if a:
-            r['title'] = a.text.encode('utf-8')
-            r['url'] = self.shortcut(a['href'])
+            elem['title'] = a.text.encode('utf-8', 'ignore')
+            elem['url'] = self.shortcut(a['href'])
         cite = node.find('cite')
         if cite:
-            r['site'] = cite.text.encode('utf-8')
+            elem['site'] = cite.text.encode('utf-8', 'ignore')
         st_span = node.find('span', class_='st')
         if st_span:
-            r['st'] = st_span.text.encode('utf-8')
-        return r
+            elem['st'] = st_span.text.encode('utf-8', 'ignore')
+        return elem
 
     def search(self, words, page=1):
         try:
             page = int(page)
         except ValueError:
             page = 1
-        gurl = 'https://www.google.com/search?q=%s&start=%d' % (url_encode(words), (page-1)*10)
+        if isinstance(words, unicode):
+            words = words.encode('utf-8', 'ignore')
+        gurl = 'https://%s/search?q=%s&start=%d' % (self.domain, url_encode(words), (page-1)*10)
         headers = HTTPHeaders()
         headers['Cookie'] = self.ncr_cookie
-        headers['Refer'] = 'https://www.google.com/'
-        try:
-            resp = url_fetch(gurl, headers=headers)
-            if resp.status != 200:
-                return None
+        headers['Refer'] = 'https://%s/' % self.domain
 
-            ct = resp.headers.split('Content-Type')
-            encoding = ct.get('charset', 'utf-8')
-            data = self.parse_result_page(resp.data.decode(encoding, 'ignore').encode('utf-8'))
-            data['p'] = page
-            return data
-        except:
-            return None
-
-    @WebApplicationHandler('/json')
-    def search_json(self, context, w, p=1, **kwargs):
-        data = self.search(w, p)
-        if not data:
+        resp = url_fetch(gurl, headers=headers)
+        if resp.status != 200:
             raise HTTPBadGateway()
+
+        ct = resp.headers.split('Content-Type')
+        encoding = ct.get('charset', 'utf-8')
+        data = self.parse_result_page(resp.data.decode(encoding, 'ignore').encode('utf-8'))
+        data['title'] = '%s - AMOOJ Search' % words
+        data['q'] = words
+        data['p'] = page
+        return data
+
+    @WebApplicationHandler(pattern='/json')
+    def search_json(self, context, q, p=1, **kwargs):
+        data = self.search(q, p)
         context.response['Content-Type'] = "application/json; charset=utf-8"
         context.response.data = json.dumps(data)
 
@@ -90,8 +93,9 @@ class GoogleSearch(object):
         """
         soup = BeautifulSoup(html, 'html.parser')
         ires = soup.find('div', id='ires')
+        data = {'stat': '', 'results': []}
         if not ires:
-            return {'stat': '', 'results': []}
+            return data
         ga = ires.find_all('li', class_='g')
         if not ga:
             ga = ires.find_all('div', class_='g')
@@ -105,7 +109,11 @@ class GoogleSearch(object):
             if rs:
                 stat = rs.text.encode('utf-8', 'ignore')
                 break
-        return {'stat': stat, 'results': results}
+        data['stat'], data['results'] = stat, results
+        return data
 
-    def result_page(self, kw, p=1):
-        pass
+    @WebApplicationHandler(pattern='/')
+    def result_page(self, context, q='', p=1, **kwargs):
+        data = self.search(q, p)
+        context.response.data = self.rtempl.render(data=data, errors='ignore').encode('utf-8')
+        context.response['Content-Type'] = 'text/html; charset=utf-8'
